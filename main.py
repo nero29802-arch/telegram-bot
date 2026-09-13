@@ -9,7 +9,11 @@ from telegram.ext import (
 )
 
 from clima import obtener_clima
-from recordatorios import programar_recordatorio
+from recordatorios import (
+    programar_recordatorio,
+    inicializar_db,
+    restaurar_recordatorios_pendientes
+)
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -66,14 +70,21 @@ async def recordar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Main ---
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    inicializar_db()
 
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clima", clima))
     app.add_handler(CommandHandler("recordar", recordar))
 
+
+    app.job_queue.run_once(
+        lambda ctx:asyncio.create_task(restaurar_recordatorios_pendientes(app)),
+        when=1
+    )
+
     print("Bot corriendo... presioná Ctrl+C para detener.")
-    app.run_polling()
+    app.run_polling(stop_signals=None)
 
 
 if __name__ == "__main__":
