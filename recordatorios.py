@@ -1,9 +1,12 @@
 import sqlite3
 import asyncio
 from datetime import datetime, timedelta
+from os.path import curdir
 
 DB_PATH = "recordatorios.db"
 
+# Guarda las tareas asyncio activas para poder cancelarlas: {id_recordatorio: Task}
+tareas_activas = {}
 
 
 def inicializar_db():
@@ -46,6 +49,22 @@ def marcar_como_enviado(id_recordatorio: int):
     conn.commit()
     conn.close()
 
+def eliminar_recordatorio(id_recordtorio: int, chat_id: int) -> bool:
+
+    """Elimina un recordatorio pendiente y devuelve True(verdadero) si existía y se borro"""
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM recordatorios WHERE id = ? AND chat_id = ? AND enviado = 0",
+        (id_recordtorio, chat_id)
+    )
+    filas_afectadas = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return filas_afectadas > 0
+
+
 def obtener_pendientes():
     """Devuelve todos los recordatorios que aun no se enviaron"""
     conn = sqlite3.connect(DB_PATH)
@@ -58,22 +77,66 @@ def obtener_pendientes():
     return filas
 
 
+def obtener_pendientes_por_chat(chat_id: int):
+
+    """Recordatorios pendientes de un chat en especifico usado por /misrecordatorios."""
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, mensaje, fecha_disparo FROM recordatorios WHERE enviado = 0 AND chat_id = ? ORDER BY fecha_disparo",
+        (chat_id,)
+
+    )
+    filas = cursor.fetchall()
+    conn.close()
+    return filas
+
+
+async def _ejecutar_recordatorio(bot, id_recordatorio, chat_id, mensaje, segundos):
+
+    """Espera y envía el recordatorio y se puede cancelar mientas se espera."""
+
+    try:
+        await asyncio.sleep(segundos)
+        await bot.send_message(chat_id=chat_id, text=f"Recordatorio: {mensaje}")
+        marcar_como_enviado(id_recordatorio)
+    except asyncio.CancelledError:
+        pass  # El usuario lo cancela on /cancelar
+    except Exception as e:
+        print(f"Error enviando recordatorio: {e}")
+    finally:
+        tareas_activas.pop(id_recordatorio, None)
+
+
 async def programar_recordatorio(contex, chat_id, mensaje, minutos):
+
     """Guarda el recordatorio en la DB y espera para enviarlo."""
+
     fecha_disparo = datetime.now() + timedelta(minutes=minutos)
     id_recordatorio = guardar_recordatorio(chat_id, mensaje, fecha_disparo)
 
-    await asyncio.sleep(minutos * 60)
+    task = asyncio.create_task(
+        _ejecutar_recordatorio(contex.bot, id_recordatorio, chat_id, mensaje, minutos * 60)
 
-    try:
-        await contex.bot.send_mesage(
-            chat_id=chat_id,
-            text=f" Recordatorio: {mensaje}"
-        )
-        marcar_como_enviado(id_recordatorio)
-    except Exception as e:
-        print(f"Error enviado recordatorio: {e}")
+    )
+    tareas_activas[id_recordatorio] = task
+    return id_recordatorio
 
+
+
+def cancelar_recordatorio(id_recordatorio: int, chat_id: int) -> bool:
+
+    """Borra el recordatorio de la DB y cancela su taras si esta activa"""
+
+    if not eliminar_recordatorio(id_recordatorio, chat_id):
+        return False
+
+    task = tareas_activas.get(id_recordatorio)
+    if task:
+        task.cancel()
+
+    return True
 
 async def restaurar_recordatorios_pendientes(app):
     """Al iniciar el bot, reprograma los recordatorios que quedaron pendientes."""
@@ -93,19 +156,10 @@ async def restaurar_recordatorios_pendientes(app):
                )
                marcar_como_enviado(id_rec)
            except Exception as e:
-               print(f"Error enviando recordatorio: {e}")
+               print(f"Error enviando recordatorio atrasados: {e}")
         else:
-            asyncio.create_task(
-                _reprogramar(app, id_rec, chat_id, mensaje, segundos_restantes)
-            )
+            task = asyncio.create_task(
+                _ejecutar_recordatorio(app.bot,id_rec, chat_id, mensaje, segundos_restantes)
 
-async def _reprogramar(app, id_recordatorio, chat_id, mensaje, segundos):
-    await asyncio.sleep(segundos)
-    try:
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=f" Recordatorio: {mensaje}"
-        )
-        marcar_como_enviado(id_recordatorio)
-    except Exception as e:
-        print(f"Error enviando recordatorio: {e}")
+            )
+            tareas_activas[id_rec] = task

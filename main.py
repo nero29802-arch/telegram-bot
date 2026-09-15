@@ -7,12 +7,16 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
+from telegram.ext._handlers import commandhandler
 
+from datetime import datetime
 from clima import obtener_clima
 from recordatorios import (
     programar_recordatorio,
     inicializar_db,
-    restaurar_recordatorios_pendientes
+    restaurar_recordatorios_pendientes,
+obtener_pendientes_por_chat,
+cancelar_recordatorio,
 )
 
 load_dotenv()
@@ -27,6 +31,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Comandos disponibles:\n"
         "/clima <ciudad> - Consulta el clima\n"
         "/recordar <minutos> <mensaje> - Te aviso en X minutos"
+        "/misrecordatorios - Lista tus recordatorios pendientes\n"
+        "/cancelar <ID> - Cancelar un recordatorio"
     )
 
 
@@ -66,6 +72,46 @@ async def recordar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         programar_recordatorio(context, chat_id, mensaje, minutos)
     )
 
+async def misrecordatorios(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    chat_id = update.effective_chat.id
+    pendientes = obtener_pendientes_por_chat(chat_id)
+
+
+    if not pendientes:
+        await update.message.reply_text("No tenés recordatorios pendientes 📭")
+        return
+
+    lineas = ["Tus recordatorios pendientes:\n"]
+    for id_rec, mensaje, fecha_str in pendientes:
+        fecha = datetime.fromisoformat(fecha_str)
+        lineas.append(f"🔹 ID {id_rec}: \"{mensaje}\" — {fecha.strftime('%d/%m %H:%M')}")
+
+
+    lineas.append("\nUsá /cancelar <ID> para cancelar uno.")
+    await update.message.reply_text("\n".join(lineas))
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: /cancelar <ID>\nMirá los IDs con misrecordatorios"
+        )
+        return
+
+    try:
+        id_recordatorio = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("El ID debe ser en número.")
+        return
+
+    chat_id = update.effective_chat.id
+
+    if cancelar_recordatorio(id_recordatorio, chat_id):
+        await update.message.reply_text(
+            "No encontré ese recordatorio por favor revisá el ID con /misrecordatorios."
+        )
+
+
 
 # --- Main ---
 
@@ -76,6 +122,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clima", clima))
     app.add_handler(CommandHandler("recordar", recordar))
+    app.add_handler(CommandHandler("misrecordatorios", misrecordatorios))
+    app.add_handler(CommandHandler("cancelar", cancelar))
 
 
     app.job_queue.run_once(
